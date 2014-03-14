@@ -6,7 +6,7 @@
 
 #define HSLUA_LONGJMP_ERROR -1
 #define HSLUA_LONGJMP_ARG_ERROR -2
-
-LUAI_FUNC int lua_neutralize_longjmp(lua_State *state);
+ 
+LUA_API int lua_neutralize_longjmp(lua_State *state);
 
 #endif  //_NTRLJMP_H

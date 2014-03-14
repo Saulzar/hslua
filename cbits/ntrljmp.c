@@ -15,7 +15,7 @@
 
 extern int hsmethod__call( lua_State *state );
 
-LUAI_FUNC int lua_neutralize_longjmp( lua_State *state )
+LUA_API int lua_neutralize_longjmp( lua_State *state )
 {
     int result;
     result = hsmethod__call(state);

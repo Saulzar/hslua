@@ -53,6 +53,7 @@ module Scripting.Lua
     LuaInteger,
     LuaNumber,
     LuaImport(..),
+    LuaException(..),
 
     -- * Constants and enumerations
     GCCONTROL(..),
@@ -167,7 +168,9 @@ module Scripting.Lua
     tothread,
     touserdata,
     ltype,
+    asserttype,
     typename,
+    typenameindex,
     xmove,
     yield,
 
@@ -177,6 +180,9 @@ module Scripting.Lua
     loadstring,
     newmetatable,
     argerror,
+    luaerror,
+    addloc,
+    trylua,
 
     -- * Debugging interface
     LuaDebug(..),
@@ -277,6 +283,7 @@ data LTYPE = TNONE
            | TFUNCTION
            | TUSERDATA
            | TTHREAD
+           | TCDATA
            deriving (Eq,Show,Ord)
 
 instance Enum LTYPE where
@@ -290,6 +297,7 @@ instance Enum LTYPE where
     fromEnum TFUNCTION      = 6
     fromEnum TUSERDATA      = 7
     fromEnum TTHREAD        = 8
+    fromEnum TCDATA         = 8
     toEnum (-1)             = TNONE
     toEnum 0                = TNIL
     toEnum 1                = TBOOLEAN
@@ -300,6 +308,7 @@ instance Enum LTYPE where
     toEnum 6                = TFUNCTION
     toEnum 7                = TUSERDATA
     toEnum 8                = TTHREAD
+    toEnum 10               = TTHREAD
     toEnum n                = error $ "Cannot convert (" ++ show n ++ ") to LTYPE"
 
 -- | Enumeration used by @gc@ function.
@@ -340,8 +349,9 @@ longjmp_arg_error :: CInt
 longjmp_arg_error = #const HSLUA_LONGJMP_ARG_ERROR
 
 
-data LuaException = ArgError Int String
-      deriving (Show, Typeable)
+data LuaException = LuaError  { leMessage :: String }
+                  | ArgError  { leArg :: Int, leMessage :: String }
+            deriving (Show, Typeable)
       
 instance Exception LuaException              
     
@@ -455,6 +465,9 @@ foreign import ccall "lua.h lua_rawseti" c_lua_rawseti :: LuaState -> CInt -> CI
 foreign import ccall "lua.h lua_setmetatable" c_lua_setmetatable :: LuaState -> CInt -> IO ()
 
 
+foreign import ccall "lua.h luaL_loadfile" c_lua_loadfile :: LuaState -> Ptr CChar -> IO CInt
+
+
 #if LUA_VERSION_NUM == 501
 foreign import ccall "lua.h lua_call" c_lua_call :: LuaState -> CInt -> CInt -> IO ()
 foreign import ccall "lua.h lua_pcall" c_lua_pcall :: LuaState -> CInt -> CInt -> CInt -> IO CInt
@@ -491,7 +504,7 @@ foreign import ccall "lua.h lua_status" c_lua_status :: LuaState -> IO CInt
 
 foreign import ccall "lua.h lua_gc" c_lua_gc :: LuaState -> CInt -> CInt -> IO CInt
 
-foreign import ccall "lua.h lua_error" c_lua_error :: LuaState -> IO CInt
+--foreign import ccall "lua.h lua_error" c_lua_error :: LuaState -> IO CInt
 
 foreign import ccall "lua.h lua_next" c_lua_next :: LuaState -> CInt -> IO CInt
 
@@ -637,15 +650,21 @@ atpanic = c_lua_atpanic
 
 -- | See @lua_tostring@ in Lua Reference Manual.
 tostring :: LuaState -> Int -> IO String
-tostring l n = c_lua_tolstring l (fromIntegral n) nullPtr >>= peekCString
+tostring l n = do   
+  asserttype l n TSTRING 
+  alloca $ \lenPtr -> do
+    strPtr <- c_lua_tolstring l (fromIntegral n) lenPtr
+    len <- F.peek lenPtr    
+    peekCStringLen (strPtr, fromIntegral len)
+
 
 -- | See @lua_tothread@ in Lua Reference Manual.
 tothread :: LuaState -> Int -> IO LuaState
-tothread l n = c_lua_tothread l (fromIntegral n)
+tothread l n = asserttype l n TTHREAD >> c_lua_tothread l (fromIntegral n)
 
 -- | See @lua_touserdata@ in Lua Reference Manual.
 touserdata :: LuaState -> Int -> IO (Ptr a)
-touserdata l n = c_lua_touserdata l (fromIntegral n)
+touserdata l n = asserttype l n TUSERDATA >> c_lua_touserdata l (fromIntegral n)
 
 -- | See @lua_typename@ in Lua Reference Manual.
 typename :: LuaState -> LTYPE -> IO String
@@ -805,7 +824,11 @@ lessthan l i j = liftM (/=0) (c_lua_lessthan l (fromIntegral i) (fromIntegral j)
 
 -- | See @luaL_loadfile@ in Lua Reference Manual.
 loadfile :: LuaState -> String -> IO Int
-loadfile l f = readFile f >>= \c -> loadstring l c f
+loadfile l f = withCString f $ \fPtr -> fmap fromIntegral $ c_lua_loadfile l fPtr
+  
+
+
+--loadfile l f = readFile f >>= \c -> loadstring l c f
 
 
 foreign import ccall "wrapper" mkStringReader :: LuaReader -> IO (FunPtr LuaReader)
@@ -946,26 +969,26 @@ status l = liftM fromIntegral (c_lua_status l)
 
 -- | See @lua_toboolean@ in Lua Reference Manual.
 toboolean :: LuaState -> Int -> IO Bool
-toboolean l n = liftM (/=0) (c_lua_toboolean l (fromIntegral n))
+toboolean l n = asserttype l n TBOOLEAN >> liftM (/=0) (c_lua_toboolean l (fromIntegral n))
 
 -- | See @lua_tocfunction@ in Lua Reference Manual.
 tocfunction :: LuaState -> Int -> IO (FunPtr LuaCFunction)
-tocfunction l n = c_lua_tocfunction l (fromIntegral n)
+tocfunction l n = asserttype l n TFUNCTION >>  c_lua_tocfunction l (fromIntegral n)
 
 -- | See @lua_tointeger@ in Lua Reference Manual.
 tointeger :: LuaState -> Int -> IO LuaInteger
 #if LUA_VERSION_NUM == 501
-tointeger l n = c_lua_tointeger l (fromIntegral n)
+tointeger l n = asserttype l n TNUMBER >>  c_lua_tointeger l (fromIntegral n)
 #else
-tointeger l n = c_lua_tointegerx l (fromIntegral n) nullPtr
+tointeger l n = asserttype l n TNUMBER >>  c_lua_tointegerx l (fromIntegral n) nullPtr
 #endif
 
 -- | See @lua_tonumber@ in Lua Reference Manual.
 tonumber :: LuaState -> Int -> IO CDouble
 #if LUA_VERSION_NUM == 501
-tonumber l n = c_lua_tonumber l (fromIntegral n)
+tonumber l n = asserttype l n TNUMBER >> c_lua_tonumber l (fromIntegral n)
 #else
-tonumber l n = c_lua_tonumberx l (fromIntegral n) nullPtr
+tonumber l n = asserttype l n TNUMBER >> c_lua_tonumberx l (fromIntegral n) nullPtr
 #endif
 
 -- | See @lua_topointer@ in Lua Reference Manual.
@@ -985,8 +1008,30 @@ newmetatable l s = withCString s $ \s -> liftM fromIntegral (c_luaL_newmetatable
 
 
 -- | See @luaL_argerror@ in Lua Reference Manual.
-argerror :: LuaState -> Int -> String -> IO CInt
-argerror l n msg = throwIO (ArgError n msg)
+argerror ::  Int -> String -> IO a
+argerror  n msg = throwIO (ArgError n msg)
+
+-- | See @luaL_argerror@ in Lua Reference Manual.
+luaerror :: String -> IO a
+luaerror msg = throwIO (LuaError msg)
+
+
+-- | Augment any error messages with (more) location information
+addloc :: String -> IO a -> IO a
+addloc loc f = do 
+  r <- trylua f
+  case r of 
+    Right v -> return v
+    Left msg -> luaerror $ loc ++ msg
+  
+
+
+trylua :: IO a -> IO (Either String a)
+trylua action = do
+  r <- try action 
+  return $ case r of 
+    Right v -> Right v
+    Left e ->  Left (leMessage e)
 
 
 -- | A value that can be pushed and poped from the Lua stack.
@@ -1002,68 +1047,63 @@ class StackValue a where
     push :: LuaState -> a -> IO ()
     -- | Check if at index @n@ there is a convertible Lua value and if so return it
     -- wrapped in @Just@. Return @Nothing@ otherwise.
-    peek :: LuaState -> Int -> IO (Maybe a)
-    -- | Lua type id code of the vaule expected. Parameter is unused.
-    valuetype :: a -> LTYPE
+    peek :: LuaState -> Int -> IO a
 
-maybepeek :: l -> n -> (l -> n -> IO Bool) -> (l -> n -> IO r) -> IO (Maybe r)
-maybepeek l n test peek = do
-    v <- test l n
-    if v
-        then liftM Just (peek l n)
-        else return Nothing
+asserttype :: LuaState -> Int -> LTYPE -> IO ()
+asserttype l i t = do
+  t'  <- ltype l i
+  
+  when (t /= t') $ do
+    exp <- typename l t
+    got <- typename l t'
+   
+    luaerror $ "expected: " ++ exp ++ ", got: " ++ got
+  
+    
+  
+  
 
 instance StackValue LuaInteger where
     push l x = pushinteger l x
-    peek l n = maybepeek l n isnumber tointeger
-    valuetype _ = TNUMBER
+    peek l n = tointeger l n
 
 instance StackValue LuaNumber where
     push l x = pushnumber l x
-    peek l n = maybepeek l n isnumber tonumber
-    valuetype _ = TNUMBER
+    peek l n = tonumber l n
 
 instance StackValue Int where
     push l x = pushinteger l (fromIntegral x)
-    peek l n = maybepeek l n isnumber (\l n -> liftM fromIntegral (tointeger l n))
-    valuetype _ = TNUMBER
+    peek l n = fmap fromIntegral $ tointeger l n
 
 instance StackValue Double where
     push l x = pushnumber l (realToFrac x)
-    peek l n = maybepeek l n isnumber (\l n -> liftM realToFrac (tonumber l n))
-    valuetype _ = TNUMBER
+    peek l n = fmap realToFrac $ tonumber l n
 
 instance StackValue String where
     push l x = pushstring l x
-    peek l n = maybepeek l n isstring tostring
-    valuetype _ = TSTRING
+    peek l n =  tostring l n 
 
 instance StackValue Bool where
     push l x = pushboolean l x
-    peek l n = maybepeek l n isboolean toboolean
-    valuetype _ = TBOOLEAN
-
+    peek l n = toboolean l n 
+    
 instance StackValue (FunPtr LuaCFunction) where
     push l x = pushcfunction l x
-    peek l n = maybepeek l n iscfunction tocfunction
-    valuetype _ = TFUNCTION
+    peek l n = tocfunction l n
 
 -- watch out for the asymetry here
 instance StackValue (Ptr a) where
     push l x = pushlightuserdata l x
-    peek l n = maybepeek l n isuserdata touserdata
-    valuetype _ = TUSERDATA
+    peek l n = touserdata l n
 
 -- watch out for push here
 instance StackValue LuaState where
     push l _ = pushthread l >> return ()
-    peek l n = maybepeek l n isthread tothread
-    valuetype _ = TTHREAD
+    peek l n = tothread l n
 
 instance StackValue () where
     push l _ = pushnil l
-    peek l n = maybepeek l n isnil (\_l _n -> return ())
-    valuetype _ = TNIL
+    peek l n = asserttype l n TNIL
 
 
 {-
@@ -1118,20 +1158,13 @@ instance (StackValue a) => LuaImport (IO a) where
 
 instance (StackValue a,LuaImport b) => LuaImport (a -> b) where
     luaimportargerror n msg x l = luaimportargerror n msg (x undefined) l
-    {-
-     - FIXME: Cannot catch this exception here, because we are called from C,
-     - and error propagation, stack unwinding, etc does not work.
-     - Cannot call lua_error, because it uses longjmp and would skip two layers of abstraction.
-     -}
     luaimport' narg x l = do
-        arg <- peek l narg
+        arg <- try $ peek l narg
+        
         case arg of
-            Just v -> luaimport' (narg+1) (x v) l
-            Nothing -> do
-                t <- ltype l narg
-                exp <- typename l (valuetype (fromJust arg))
-                got <- typename l t         
-                throwIO (ArgError  narg (exp ++ " expected, got " ++ got))
+            Right v -> luaimport' (narg+1) (x v) l
+            Left (LuaError msg) ->  throwIO (ArgError narg msg)
+            Left e              ->  throwIO e
                 
 
 foreign import ccall "wrapper" mkWrapper :: LuaCFunction -> IO (FunPtr LuaCFunction)
@@ -1150,10 +1183,12 @@ newcfunction = mkWrapper . luaimport
 -- Any Haskell exception will be converted to a string and returned
 -- as Lua error.
 luaimport :: LuaImport a => a -> LuaCFunction
-luaimport a l = luaimport' 1 a l `catches` [Handler handleIOException, Handler handleException] 
-  where
-    handleIOException (e :: IOException)  = push l (show e) >> return longjmp_error
+luaimport a l = luaimport' 1 a l `catches` [Handler handleException, Handler handleAny] 
+  where  
     handleException (ArgError narg msg)   = push l narg >> push l msg >> return longjmp_arg_error
+    handleException (LuaError msg)   = push l msg >> return longjmp_error
+    
+    handleAny (e :: SomeException)  = push l (show e) >> return longjmp_error
   
   
 -- | Free function pointer created with @newcfunction@.
@@ -1185,32 +1220,37 @@ instance LuaCallProc (IO t) where
         a
         z <- pcall l k 0 0
         case z of
-          PCOK -> return undefined
+          PCOK -> return $ error "Not implemented LuaCallProc (IO t)"
           _    -> do
-            Just msg <- peek l (-1)
+            msg <- peek l (-1)
             pop l 1
-            Prelude.fail msg
+            luaerror msg
 
-instance (StackValue t) => LuaCallFunc (IO t) where
+instance (StackValue t, Show t) => LuaCallFunc (IO t) where
     callfunc' l f a k = do
         getglobal2 l f
         a
         z <- pcall l k 1 0
         case z of
-          PCOK -> do
-            Just msg <- peek l (-1)
+          PCOK -> retValue
+          _ -> do
+            msg <- peek l (-1)
             pop l 1
-            Prelude.fail msg
-          _    -> do
-            r <- peek l (-1)
+            luaerror msg
+      where      
+        retValue = do
+            r <- try $ peek l (-1)             
             pop l 1
+                      
             case r of
-                Just x -> return x
-                Nothing -> do
-                    exp <- typename l (valuetype (fromJust r))
-                    t <- ltype l (-1)
-                    got <- typename l t
-                    Prelude.fail ("Incorrect result type (" ++ exp ++ " expected, got " ++ got ++ ")")
+                Right v -> return v
+                Left (LuaError msg) ->  luaerror $ "in return value, " ++ msg
+                Left e              ->  throwIO e
+            
+         
+
+        
+
 
 instance (StackValue t,LuaCallProc b) => LuaCallProc (t -> b) where
     callproc' l f a k x = callproc' l f (a >> push l x) (k+1)
@@ -1227,17 +1267,18 @@ foreign import ccall "&hsmethod__call" hsmethod__call_addr :: FunPtr LuaCFunctio
 
 hsmethod__gc :: LuaState -> IO CInt
 hsmethod__gc l = do
-    Just ptr <- peek l (-1)
+    ptr <- peek l (-1)
     stableptr <- F.peek (castPtr ptr)
     freeStablePtr stableptr
     return 0
 
 hsmethod__call :: LuaState -> IO CInt
 hsmethod__call l = do
-    Just ptr <- peek l 1
+    ptr <- peek l 1
     remove l 1
     stableptr <- F.peek (castPtr ptr)
     f <- deRefStablePtr stableptr
+    
     f l
 
 -- | Pushes Haskell function converted to a Lua function.

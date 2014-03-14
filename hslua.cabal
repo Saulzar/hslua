@@ -25,11 +25,13 @@ flag system-lua
   default:           False
 
 Library
-  Build-depends:     base==4.*, mtl >= 2.1
-  Exposed-modules:   Scripting.Lua, Scripting.Lua.ConfigFile
+  Build-depends:     base==4.*, mtl >= 2.1, vector, bytestring, text, containers
+  Exposed-modules:   Scripting.Lua, Scripting.Lua.Instances
   Hs-source-dirs:    src
+  
+  default-extensions: ExistentialQuantification, OverlappingInstances
 
   include-dirs:      cbits
-  Pkgconfig-depends:  lua5.1
-  --extra-libraries:   luajit
+  --Pkgconfig-depends:  lua5.1
+  extra-libraries:   luajit
   C-sources:         cbits/ntrljmp.c
